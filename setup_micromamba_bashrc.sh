@@ -24,6 +24,7 @@ PATCH_COLAB_IPYTHON_CONFIG="${PATCH_COLAB_IPYTHON_CONFIG:-1}"
 
 # Optional: Install ipykernel in the base env and register a Jupyter kernelspec.
 INSTALL_IPYKERNEL="${INSTALL_IPYKERNEL:-1}"
+INSTALL_JUPYTER_NOTEBOOK="${INSTALL_JUPYTER_NOTEBOOK:-0}"
 REGISTER_KERNEL="${REGISTER_KERNEL:-1}"
 KERNEL_NAME="${KERNEL_NAME:-micromamba}"
 KERNEL_DISPLAY_NAME="${KERNEL_DISPLAY_NAME:-Python (micromamba)}"
@@ -100,6 +101,7 @@ Common overrides:
   BASE_PYTHON_VERSION=3.12
   BASE_PYTHON_CHANNEL=conda-forge
   INSTALL_IPYKERNEL=1
+  INSTALL_JUPYTER_NOTEBOOK=0
   REGISTER_KERNEL=1
   KERNEL_NAME=micromamba
   KERNEL_DISPLAY_NAME="Python (micromamba)"
@@ -124,6 +126,7 @@ print_config() {
   log "BASE_PYTHON_VERSION: $BASE_PYTHON_VERSION"
   log "BASE_PYTHON_CHANNEL: $BASE_PYTHON_CHANNEL"
   log "INSTALL_IPYKERNEL: $INSTALL_IPYKERNEL"
+  log "INSTALL_JUPYTER_NOTEBOOK: $INSTALL_JUPYTER_NOTEBOOK"
   log "REGISTER_KERNEL: $REGISTER_KERNEL"
   log "KERNEL_NAME: $KERNEL_NAME"
   log "KERNEL_DISPLAY_NAME: $KERNEL_DISPLAY_NAME"
@@ -237,10 +240,56 @@ export MAMBA_ROOT_PREFIX="\${MAMBA_ROOT_PREFIX:-$MAMBA_ROOT_PREFIX}"
 export MAMBA_EXE="\${MAMBA_EXE:-$MICROMAMBA}"
 export AUTO_ACTIVATE_BASE="\${AUTO_ACTIVATE_BASE:-$AUTO_ACTIVATE_BASE}"
 
-case ":\${PATH:-}:" in
-  *":${micromamba_dir}:"*) ;;
-  *) export PATH="${micromamba_dir}:\${PATH:-}" ;;
-esac
+# Put the micromamba bin dir at the front of PATH (deduped).
+_mv_sam3d_micromamba_dir="${micromamba_dir}"
+_mv_sam3d_path_in="\${PATH-}"
+if [ -n "\${ZSH_VERSION-}" ]; then
+  _mv_sam3d_fix_path() {
+    emulate -L sh
+    PATH=""
+    _mv_sam3d_old_ifs="\${IFS-}"
+    IFS=":"
+    for _mv_sam3d_p in \$_mv_sam3d_path_in; do
+      [ -z "\$_mv_sam3d_p" ] && continue
+      [ "\$_mv_sam3d_p" = "\$_mv_sam3d_micromamba_dir" ] && continue
+      if [ -z "\${PATH}" ]; then
+        PATH="\$_mv_sam3d_p"
+      else
+        PATH="\${PATH}:\$_mv_sam3d_p"
+      fi
+    done
+    IFS="\$_mv_sam3d_old_ifs"
+    if [ -n "\${PATH}" ]; then
+      PATH="\$_mv_sam3d_micromamba_dir:\${PATH}"
+    else
+      PATH="\$_mv_sam3d_micromamba_dir"
+    fi
+    export PATH
+  }
+  _mv_sam3d_fix_path
+  unset -f _mv_sam3d_fix_path
+else
+  PATH=""
+  _mv_sam3d_old_ifs="\${IFS-}"
+  IFS=":"
+  for _mv_sam3d_p in \$_mv_sam3d_path_in; do
+    [ -z "\$_mv_sam3d_p" ] && continue
+    [ "\$_mv_sam3d_p" = "\$_mv_sam3d_micromamba_dir" ] && continue
+    if [ -z "\${PATH}" ]; then
+      PATH="\$_mv_sam3d_p"
+    else
+      PATH="\${PATH}:\$_mv_sam3d_p"
+    fi
+  done
+  IFS="\$_mv_sam3d_old_ifs"
+  if [ -n "\${PATH}" ]; then
+    PATH="\$_mv_sam3d_micromamba_dir:\${PATH}"
+  else
+    PATH="\$_mv_sam3d_micromamba_dir"
+  fi
+  export PATH
+fi
+unset _mv_sam3d_micromamba_dir _mv_sam3d_path_in _mv_sam3d_old_ifs _mv_sam3d_p
 # <<< MV-SAM3D micromamba env <<<
 EOF
 
@@ -325,9 +374,9 @@ else
   export MAMBA_ROOT_PREFIX="${MAMBA_ROOT_PREFIX:-$MAMBA_ROOT_PREFIX}"
   export MAMBA_EXE="${MAMBA_EXE:-$MICROMAMBA}"
   export AUTO_ACTIVATE_BASE="${AUTO_ACTIVATE_BASE:-$AUTO_ACTIVATE_BASE}"
-  case ":\${PATH:-}:" in
-    *":${micromamba_dir}:"*) ;;
-    *) export PATH="${micromamba_dir}:\${PATH:-}" ;;
+  case "\${PATH-}" in
+    "${micromamba_dir}"|"${micromamba_dir}:"*) ;;
+    *) export PATH="${micromamba_dir}\${PATH:+:\${PATH}}" ;;
   esac
 fi
 
@@ -706,11 +755,17 @@ ensure_ipykernel_and_kernel() {
 
   local base_python="${MAMBA_ROOT_PREFIX%/}/bin/python"
   if [[ ! -x "$base_python" ]]; then
-    die "Base Python not found at $base_python. Set INSTALL_BASE_PYTHON=1 and rerun."
+    if [[ "$DRY_RUN" == "1" ]]; then
+      log "DRY_RUN=1: base Python not present at $base_python (expected)."
+    else
+      die "Base Python not found at $base_python. Set INSTALL_BASE_PYTHON=1 and rerun."
+    fi
   fi
 
   if [[ "$INSTALL_IPYKERNEL" == "1" ]]; then
-    if "$base_python" -c "import ipykernel" >/dev/null 2>&1; then
+    if [[ "$DRY_RUN" == "1" ]]; then
+      log "+ \"$MICROMAMBA\" install -y -p \"$MAMBA_ROOT_PREFIX\" -c \"$BASE_PYTHON_CHANNEL\" ipykernel"
+    elif "$base_python" -c "import ipykernel" >/dev/null 2>&1; then
       log "ipykernel already installed in base: $base_python"
     else
       log "Installing ipykernel into base at: $MAMBA_ROOT_PREFIX"
@@ -721,6 +776,20 @@ ensure_ipykernel_and_kernel() {
     fi
   fi
 
+  if [[ "$INSTALL_JUPYTER_NOTEBOOK" == "1" ]]; then
+    if [[ "$DRY_RUN" == "1" ]]; then
+      log "+ \"$MICROMAMBA\" install -y -p \"$MAMBA_ROOT_PREFIX\" -c \"$BASE_PYTHON_CHANNEL\" notebook"
+    elif "$base_python" -c "import notebook" >/dev/null 2>&1; then
+      log "notebook already installed in base: $base_python"
+    else
+      log "Installing Jupyter Notebook into base at: $MAMBA_ROOT_PREFIX"
+      run_timed "$MICROMAMBA_TIMEOUT" "$MICROMAMBA" install -y \
+        -p "$MAMBA_ROOT_PREFIX" \
+        -c "$BASE_PYTHON_CHANNEL" \
+        notebook
+    fi
+  fi
+
   if [[ "$REGISTER_KERNEL" != "1" ]]; then
     return 0
   fi
@@ -728,6 +797,8 @@ ensure_ipykernel_and_kernel() {
   log "Registering Jupyter kernel: $KERNEL_NAME ($KERNEL_DISPLAY_NAME)"
   if [[ "$DRY_RUN" == "1" ]]; then
     log "+ \"$base_python\" -m ipykernel install --user --name \"$KERNEL_NAME\" --display-name \"$KERNEL_DISPLAY_NAME\""
+    log "+ patch kernelspec env: \"${HOME}/.local/share/jupyter/kernels/${KERNEL_NAME}/kernel.json\""
+    return 0
   else
     "$base_python" -m ipykernel install --user --name "$KERNEL_NAME" --display-name "$KERNEL_DISPLAY_NAME"
   fi
