@@ -9,12 +9,17 @@ MICROMAMBA_BIN="${MICROMAMBA_BIN:-$SCRIPT_DIR/bin/micromamba}"
 BASHRC_PATH="${BASHRC_PATH:-$HOME/.bashrc}"
 ZSHRC_PATH="${ZSHRC_PATH:-$HOME/.zshrc}"
 AUTO_ACTIVATE_BASE="${AUTO_ACTIVATE_BASE:-1}"
+INSTALL_BASE_PYTHON="${INSTALL_BASE_PYTHON:-1}"
+BASE_PYTHON_VERSION="${BASE_PYTHON_VERSION:-3.12}"
+BASE_PYTHON_CHANNEL="${BASE_PYTHON_CHANNEL:-conda-forge}"
 DRY_RUN="${DRY_RUN:-0}"
 
 # Network hardening for downloads.
 CURL_CONNECT_TIMEOUT_SECS="${CURL_CONNECT_TIMEOUT_SECS:-10}"
 CURL_MAX_TIME_SECS="${CURL_MAX_TIME_SECS:-120}"
 CURL_RETRIES="${CURL_RETRIES:-5}"
+
+MICROMAMBA_TIMEOUT="${MICROMAMBA_TIMEOUT:-3600s}"
 
 log() {
   printf "[MV-SAM3D/colab] %s\n" "$*"
@@ -33,6 +38,16 @@ run() {
   "$@"
 }
 
+run_timed() {
+  local duration="$1"
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    run timeout --preserve-status "$duration" "$@"
+  else
+    run "$@"
+  fi
+}
+
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
     die "Missing required command: $1"
@@ -48,6 +63,7 @@ What it does:
   1) Ensures micromamba exists (downloads into colab/bin if needed)
   2) Patches your bashrc and zshrc so `micromamba` is available in new shells
   3) Optionally auto-activates the base environment in new shells
+  4) Optionally installs Python into base (default: 3.12)
 
 Common overrides:
   MAMBA_ROOT_PREFIX=colab/micromamba
@@ -55,6 +71,10 @@ Common overrides:
   BASHRC_PATH=~/.bashrc
   ZSHRC_PATH=~/.zshrc
   AUTO_ACTIVATE_BASE=1
+  INSTALL_BASE_PYTHON=1
+  BASE_PYTHON_VERSION=3.12
+  BASE_PYTHON_CHANNEL=conda-forge
+  MICROMAMBA_TIMEOUT=3600s
   DRY_RUN=1
 EOF
 }
@@ -66,6 +86,10 @@ print_config() {
   log "BASHRC_PATH: $BASHRC_PATH"
   log "ZSHRC_PATH: $ZSHRC_PATH"
   log "AUTO_ACTIVATE_BASE: $AUTO_ACTIVATE_BASE"
+  log "INSTALL_BASE_PYTHON: $INSTALL_BASE_PYTHON"
+  log "BASE_PYTHON_VERSION: $BASE_PYTHON_VERSION"
+  log "BASE_PYTHON_CHANNEL: $BASE_PYTHON_CHANNEL"
+  log "MICROMAMBA_TIMEOUT: $MICROMAMBA_TIMEOUT"
 }
 
 ensure_micromamba() {
@@ -107,6 +131,26 @@ ensure_micromamba() {
   export MAMBA_ROOT_PREFIX
   log "micromamba: $MICROMAMBA"
   log "MAMBA_ROOT_PREFIX: $MAMBA_ROOT_PREFIX"
+}
+
+ensure_base_python() {
+  if [[ "$INSTALL_BASE_PYTHON" != "1" ]]; then
+    log "Skipping base Python install (INSTALL_BASE_PYTHON=$INSTALL_BASE_PYTHON)"
+    return 0
+  fi
+
+  local base_python="${MAMBA_ROOT_PREFIX%/}/bin/python"
+  if [[ -x "$base_python" ]]; then
+    log "Base Python already present: $base_python"
+    return 0
+  fi
+
+  log "Installing Python ${BASE_PYTHON_VERSION} into base at: $MAMBA_ROOT_PREFIX"
+  run mkdir -p "$MAMBA_ROOT_PREFIX"
+  run_timed "$MICROMAMBA_TIMEOUT" "$MICROMAMBA" install -y \
+    -p "$MAMBA_ROOT_PREFIX" \
+    -c "$BASE_PYTHON_CHANNEL" \
+    "python=${BASE_PYTHON_VERSION}"
 }
 
 patch_shell_rc() {
@@ -246,6 +290,7 @@ main() {
   esac
 
   ensure_micromamba
+  ensure_base_python
   patch_shell_rc "$BASHRC_PATH" "bash"
   patch_shell_rc "$ZSHRC_PATH" "zsh"
 
